@@ -11,20 +11,28 @@ function getEbuildUrls() {
     $bash = <<<EOF
 #!/bin/bash
 source /etc/portage/make.conf
-eval `
-find /usr/portage/ \
-	-name oracle-jre-bin*ebuild \
-	-or -name oracle-jdk-bin*ebuild |
-	xargs cat | grep -m2 -h -e ^JDK_URI -e ^JRE_URI
-`
+export JDK_URI=$(ebuild `equery which oracle-jdk-bin` nofetch |& grep -m1 -oe http://.*downloads.*$)
+export JRE_URI=$(ebuild `equery which oracle-jre-bin` nofetch |& grep -m1 -oe http://.*downloads.*$)
+
+export jre_link=$(ebuild  `equery which oracle-jre-bin` nofetch  |& grep -o j.*tar.gz)
+export jdk_link=$(ebuild  `equery which oracle-jdk-bin` nofetch  |& grep -o j.*tar.gz)
+
+
 echo "{
     'downloads': '/home/\$USER/Downloads',
     'DISTDIR': '\$DISTDIR',
+    'jre_link': '\$jre_link',
+    'jdk_link': '\$jdk_link',
     'JRE_URI': '\$JRE_URI',
     'JDK_URI': '\$JDK_URI' }" | tr \' \"
 EOF;
-    exec($bash, $helper);
-    return json_decode(join('', $helper));
+    exec($bash, $json);
+	$helper = json_decode(join('', $json));
+	if (empty($helper->JRE_URI)) die("JRE_URI ?\n");
+	if (empty($helper->JDK_URI)) die("JDK_URI ?\n");
+	if (! is_dir($helper->downloads)) die("not a dire: $helper->downloads\n");
+	if (! is_dir($helper->DISTDIR)) die("not a dire: $helper->DISTDIR\n");
+    return $helper;
 }
 
 
@@ -49,28 +57,30 @@ function waitForFile($file, Session $session, $helper) {
 
 function main(Mink $mink, $helper) {
     /** @var \Behat\Mink\Element\NodeElement $e */
-
     $s = $mink->getSession('selenium2');
     $s->resizeWindow(200, 200);
-    $s->resizeWindow(1400, 1400);
     $file = [];
-
-    foreach ([ $helper->JDK_URI, $helper->JRE_URI] as $tarball) {
-        $s->visit($tarball);
+    foreach ([ $helper->JDK_URI, $helper->JRE_URI] as $downloadPage) {
+    	echo "going to $downloadPage\n";
+        $s->visit($downloadPage);
         $page = $s->getPage();
-        $form = $s->getPage()->find('css', '.lic_form');
-        foreach ($page->findAll('css', 'form') as $e) {
+        foreach ($page->findAll('css', 'form.lic_form') as $e) {
             if (s($e->getAttribute('name'))->contains('agreement')) {
-                $input = $e->find('css', 'input[value=on]');
-                $input->selectOption('on');
-
-                $link = $page->findLink('linux-x64.tar.gz');
-                $link->click();
-
-                $file[] = $link->getAttribute('href');
-                break;
+	            foreach($e->findAll('css', 'input[value=on]') as $input) {
+	            	if ($input->isVisible()) {
+			            $input->selectOption('on');
+		            }
+	            }
             }
         }
+
+	    foreach ([ $helper->jre_link, $helper->jdk_link] as $linkName) {
+		    if ($link = $page->findLink($linkName)) {
+			    $link->click();
+			    $file[] = $link->getAttribute('href');
+		    }
+	    }
+
     }
 
     foreach ($file as $f) {
